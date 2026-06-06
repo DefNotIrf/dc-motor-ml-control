@@ -255,11 +255,11 @@ Resolve any conflicts, then continue working.
 
 | Branch | Owner |
 |---|---|
-| `feature/ann-controller` | Member 1 |
-| `feature/pinn-controller` | Member 2 |
-| `feature/kmeans-fcm-controller` | Member 3 |
-| `feature/qlearning-controller` | Member 4 |
-| `feature/streamlit-gui` | Member 2 |
+| `feature/ann-controller` | Azim |
+| `feature/pinn-controller` | Irfan |
+| `feature/kmeans-fcm-controller` | Ammar |
+| `feature/qlearning-controller` | Naufal |
+| `feature/streamlit-gui` | Irfan |
 
 ---
 

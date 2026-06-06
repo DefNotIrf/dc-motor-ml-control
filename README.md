@@ -7,7 +7,7 @@
 
 ## Why Control a DC Motor?
 
-DC motors are everywhere — from industrial conveyor belts and robotic arms to electric vehicles and medical devices. At their core, they convert electrical energy into mechanical rotation, and controlling that rotation precisely is critical. Too slow and a robotic arm misses its target. Too fast and a conveyor line damages products. In the real world, motors face unpredictable loads, voltage fluctuations, and mechanical wear — all of which throw off their speed.
+DC motors are everywhere, from industrial conveyor belts and robotic arms to electric vehicles and medical devices. At their core, they convert electrical energy into mechanical rotation, and controlling that rotation precisely is critical. Too slow and a robotic arm misses its target. Too fast and a conveyor line damages products. In the real world, motors face unpredictable loads, voltage fluctuations, and mechanical wear all of which throw off their speed.
 
 Speed control is therefore one of the most fundamental and practically important problems in engineering. Getting it right means better efficiency, longer hardware lifespan, and safer operation.
 
@@ -22,7 +22,7 @@ For a DC motor, a PID controller works by:
 - **I** — correcting for accumulated past errors (eliminating steady-state offset)
 - **D** — anticipating future error by looking at the rate of change
 
-PID is our **baseline** in this project. It represents what classical control can achieve with a well-tuned, fixed set of gains (Kp, Ki, Kd). Any ML method we propose must justify itself by outperforming or meaningfully improving upon this baseline.
+PID is our **baseline** in this project. It represents what classical control can achieve with a well-tuned, fixed set of gains (Kp = 10.0, Ki = 8.0, Kd = 0.5). Any ML method we propose must justify itself by outperforming or meaningfully improving upon this baseline.
 
 ---
 
@@ -42,12 +42,33 @@ In this project, we explore three ML paradigms applied to DC motor speed control
 | Paradigm | Method | Key Idea |
 |---|---|---|
 | Supervised Learning | ANN | Learns to mimic optimal PID behaviour from training data |
-| Supervised + Physics | PINN | Embeds motor differential equations into the learning process |
+| Supervised + Physics | PINN | Embeds motor differential equations into the loss function |
 | Unsupervised Learning | K-Means | Clusters operating regions and schedules gains per cluster |
 | Unsupervised Learning | Fuzzy C-Means (FCM) | Soft clustering for smoother gain transitions across regions |
 | Reinforcement Learning | Q-Learning | Agent learns control policy through trial-and-error interaction |
 
 Each method is evaluated against PID on the same motor model under identical conditions — giving a fair, direct comparison.
+
+---
+
+## Simulation Setup
+
+| Parameter | Value |
+|---|---|
+| Time step (DT) | 0.01 s |
+| Simulation duration | 5.0 s |
+| Default setpoint | 10.0 rad/s |
+| Voltage limit | 0 – 24 V |
+| Disturbance injection | t = 3.0 s |
+| Disturbance magnitude | 0.3 N·m |
+| Sensor noise (σ) | 0.02 rad/s |
+
+### ANN Architecture
+- Input features: `[error, integral, derivative, omega, setpoint]` (all normalised)
+- Hidden layers: `128 → 64 → 32` neurons, ReLU activation
+- Output: normalised voltage (scaled back to 0–24 V)
+- Solver: Adam, learning rate 0.001, max 200 epochs
+- Training data: PID rollouts across setpoints `[5, 8, 10, 12, 15]` rad/s and disturbances `[0, 0.2, 0.3, 0.5]` N·m
 
 ---
 
@@ -133,19 +154,6 @@ python run_all.py
 ### Launch the interactive dashboard
 ```bash
 streamlit run app/app.py
-```
-
----
-
-## Requirements
-
-```
-numpy
-scipy
-scikit-learn
-matplotlib
-pandas
-streamlit
 ```
 
 ---
@@ -255,4 +263,4 @@ Resolve any conflicts, then continue working.
 
 ---
 
-*MCTA 4362 Machine Learning · Faculty of Electrical Engineering · 2026*
+*MCTA 4362 Machine Learning · Mechatronics Engineering · 2026*

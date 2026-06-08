@@ -16,7 +16,7 @@ from controllers import (
     PIDController, ANNController, QLearningController,
     run_simulation, compute_metrics, DT, T_END
 )
-from pinn_controller import PINNController
+from PINN import PINNController   # fixed: was 'pinn_controller', file is PINN.py
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -75,10 +75,10 @@ COLORS = {
 
 # ─────────────────────────────────────────────
 # KMEANS / FCM STUB CONTROLLERS
-# These will be replaced by your teammates' actual code.
+# Replace with teammates' actual implementations.
 # ─────────────────────────────────────────────
 class KMeansController:
-    """Placeholder — replace with teammates' K-Means controller."""
+    """Placeholder — Ammar to replace with actual K-Means controller."""
     def __init__(self): self.trained = False
     def train(self): self.trained = True
     def compute(self, err, integral, derivative, setpoint=10.0):
@@ -87,7 +87,7 @@ class KMeansController:
     def name(self): return "K-Means"
 
 class FCMController:
-    """Placeholder — replace with teammates' FCM controller."""
+    """Placeholder — Ammar to replace with actual FCM controller."""
     def __init__(self): self.trained = False
     def train(self): self.trained = True
     def compute(self, err, integral, derivative, setpoint=10.0):
@@ -108,6 +108,7 @@ def init_state():
         'trained':  {'ann': False, 'pinn': False, 'kmeans': False, 'fcm': False, 'ql': False},
         'results':  {},
         'setpoint': 10.0,
+        'dist_time': 3.0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -159,9 +160,9 @@ with st.sidebar:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown("**Select Controllers**")
     sel = {
-        'PID':        st.checkbox("PID (Classical)",   value=True),
-        'ANN':        st.checkbox("ANN (Supervised)",  value=True),
-        'PINN':       st.checkbox("PINN (Physics-Informed)", value=True),
+        'PID':        st.checkbox("PID (Classical)",        value=True),
+        'ANN':        st.checkbox("ANN (Supervised)",       value=True),
+        'PINN':       st.checkbox("PINN (Physics-Informed)",value=True),
         'K-Means':    st.checkbox("K-Means (Unsupervised)", value=True),
         'FCM':        st.checkbox("FCM (Unsupervised)",     value=True),
         'Q-Learning': st.checkbox("Q-Learning (RL)",        value=True),
@@ -171,10 +172,9 @@ with st.sidebar:
     st.markdown("### 🧠 Model Status")
     trained = st.session_state.trained
     for label, key in [("ANN","ann"),("PINN","pinn"),("K-Means","kmeans"),("FCM","fcm"),("Q-Learning","ql")]:
-        ok  = trained[key]
-        cls = "status-ready" if ok else "status-pending"
-        txt = "✓ Trained" if ok else "○ Not trained"
+        ok    = trained[key]
         color = COLORS.get(label, '#8B949E')
+        txt   = "✓ Trained" if ok else "○ Not trained"
         st.markdown(
             f'<div style="background:#161B22;border-left:3px solid {color};'
             f'padding:5px 10px;margin:3px 0;border-radius:4px;font-size:0.8rem;">'
@@ -224,6 +224,11 @@ CTRL_MAP = {
     'Q-Learning': lambda: st.session_state.ql,
 }
 
+KEY_MAP = {
+    'ANN': 'ann', 'PINN': 'pinn',
+    'K-Means': 'kmeans', 'FCM': 'fcm', 'Q-Learning': 'ql'
+}
+
 if run_btn:
     results = {}
     os.makedirs('results', exist_ok=True)
@@ -232,11 +237,10 @@ if run_btn:
         for name, factory in CTRL_MAP.items():
             if not sel[name]:
                 continue
-            key = name.lower().replace('-','').replace(' ','')
-            key = {'qlearning':'ql','kmeans':'kmeans','fcm':'fcm',
-                   'ann':'ann','pinn':'pinn'}.get(key, key)
-            # Auto-train if needed
-            if name != 'PID' and not st.session_state.trained.get(key, True):
+
+            # Auto-train ML models if not yet trained
+            key = KEY_MAP.get(name)
+            if key and not st.session_state.trained.get(key, True):
                 with st.spinner(f"Auto-training {name}..."):
                     if key == 'ql':
                         st.session_state.ql.train(setpoint=setpoint, n_episodes=1200)
@@ -247,16 +251,16 @@ if run_btn:
             ctrl = factory()
             results[name] = run_simulation(ctrl, setpoint, dist_time, dist_mag, noise_std)
 
-    st.session_state.results  = results
-    st.session_state.setpoint = setpoint
+    st.session_state.results   = results
+    st.session_state.setpoint  = setpoint
     st.session_state.dist_time = dist_time
     st.toast("Simulation complete!", icon="⚡")
 
 # ─────────────────────────────────────────────
 # RESULTS
 # ─────────────────────────────────────────────
-results  = st.session_state.results
-setpoint = st.session_state.get('setpoint', 10.0)
+results   = st.session_state.results
+setpoint  = st.session_state.get('setpoint', 10.0)
 dist_time = st.session_state.get('dist_time', 3.0)
 
 if not results:
@@ -285,9 +289,9 @@ with tab1:
         ls = '--' if name in ['ANN','FCM'] else '-'
         ax.plot(t, res['omega'], color=COLORS[name], lw=2, ls=ls, label=name, alpha=0.9)
 
-    ax.axhline(setpoint,       color='#58A6FF', lw=1.5, ls=':', label=f'Setpoint ({setpoint} rad/s)')
-    ax.axhline(setpoint*1.02,  color='#30363D', lw=0.8, ls='--', alpha=0.5)
-    ax.axhline(setpoint*0.98,  color='#30363D', lw=0.8, ls='--', alpha=0.5)
+    ax.axhline(setpoint,      color='#58A6FF', lw=1.5, ls=':', label=f'Setpoint ({setpoint} rad/s)')
+    ax.axhline(setpoint*1.02, color='#30363D', lw=0.8, ls='--', alpha=0.5)
+    ax.axhline(setpoint*0.98, color='#30363D', lw=0.8, ls='--', alpha=0.5)
     ax.fill_between(t, setpoint*0.98, setpoint*1.02, alpha=0.05, color='#58A6FF')
     ax.axvline(dist_time, color='#F78166', lw=1.5, ls='--', alpha=0.8, label=f'Disturbance @ t={dist_time}s')
     ax.set_title('DC Motor Angular Speed — All Controllers', fontsize=13, fontweight='bold')
@@ -296,21 +300,19 @@ with tab1:
     fig.tight_layout()
     st.pyplot(fig)
 
-    # Save + export button
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
     buf.seek(0)
     st.download_button("⬇ Download Plot", buf, "speed_response.png", "image/png")
     plt.close()
 
-    # Steady state cards
     st.markdown("#### Steady-State Speed")
     metrics_all = {name: compute_metrics(res, setpoint) for name, res in results.items()}
     cols = st.columns(len(results))
     best_mse = min(m['MSE'] for m in metrics_all.values())
 
     for col, (name, m) in zip(cols, metrics_all.items()):
-        color = COLORS[name]
+        color   = COLORS[name]
         is_best = m['MSE'] == best_mse
         with col:
             st.markdown(
@@ -334,14 +336,12 @@ with tab2:
 
     for j, (name, res) in enumerate(results.items()):
         color = COLORS[name]
-        # Voltage
         axes[0][j].plot(t, res['u'], color=color, lw=1.5, alpha=0.9)
         axes[0][j].axvline(dist_time, color='#F78166', lw=1, ls='--', alpha=0.7)
         axes[0][j].set_title(name, fontsize=9, fontweight='bold', color=color)
         axes[0][j].set_ylim(-0.5, 25)
         axes[0][j].set_ylabel('Voltage (V)' if j == 0 else '')
 
-        # Error
         axes[1][j].plot(t, np.abs(res['error']), color=color, lw=1.5, alpha=0.9)
         axes[1][j].axvline(dist_time, color='#F78166', lw=1, ls='--', alpha=0.7)
         axes[1][j].set_xlabel('Time (s)')
@@ -375,14 +375,13 @@ with tab3:
     st.dataframe(df.style.format(lambda x: f"{x:.4f}" if isinstance(x, float) else str(x)),
                  use_container_width=True, height=280)
 
-    # Rankings
     st.markdown("#### 🏆 Rankings")
     c1, c2, c3 = st.columns(3)
 
     for col, metric, label in [
-        (c1, 'MSE',            'MSE'),
-        (c2, 'IAE',            'IAE'),
-        (c3, 'Overshoot (%)',  'Overshoot'),
+        (c1, 'MSE',           'MSE'),
+        (c2, 'IAE',           'IAE'),
+        (c3, 'Overshoot (%)', 'Overshoot'),
     ]:
         with col:
             st.markdown(f"**By {label} (lower = better)**")
@@ -399,7 +398,6 @@ with tab3:
                     f' — <code>{val:.4f if isinstance(val, float) else val}</code></div>',
                     unsafe_allow_html=True)
 
-    # Export metrics as CSV
     st.markdown("#### ⬇ Export")
     csv = df.to_csv().encode('utf-8')
     st.download_button("Download Metrics CSV", csv, "metrics.csv", "text/csv")
@@ -410,7 +408,7 @@ with tab4:
     pinn = st.session_state.pinn
     if pinn.trained and pinn.loss_history:
         fig, ax = plt.subplots(figsize=(12, 3.5))
-        ax.plot(pinn.loss_history,         color='#E63946', lw=2,         label='Total Loss')
+        ax.plot(pinn.loss_history,         color='#E63946', lw=2,          label='Total Loss')
         ax.plot(pinn.data_loss_history,    color='#2A9D8F', lw=1.5, ls='--', label='Data Loss')
         ax.plot(pinn.physics_loss_history, color='#F4A261', lw=1.5, ls=':',  label='Physics Loss')
         ax.set_yscale('log')

@@ -50,7 +50,7 @@ class PIDController:
     def __init__(self, Kp=10.0, Ki=8.0, Kd=0.5):
         self.Kp, self.Ki, self.Kd = Kp, Ki, Kd
 
-    def compute(self, err, integral, derivative):
+    def compute(self, err, integral, derivative, setpoint=10.0):
         return self.Kp*err + self.Ki*integral + self.Kd*derivative
 
     def name(self): return "PID"
@@ -95,7 +95,7 @@ class ANNController:
             learning_rate_init=0.001, max_iter=300,
             random_state=42, verbose=False)
         self.model.fit(Xs, y)
-        self.trained   = True
+        self.trained    = True
         self.loss_curve = self.model.loss_curve_
         return self.model.loss_
 
@@ -123,23 +123,17 @@ class AdaptivePIDController:
         self.model   = None
         self.scaler  = StandardScaler()
         self.trained = False
-        # Gain bounds
         self.KP_RANGE = (2.0,  20.0)
         self.KI_RANGE = (0.5,  15.0)
         self.KD_RANGE = (0.05,  2.0)
 
     def _optimal_gains(self, omega, setpoint, err, integral):
-        """
-        Heuristic: compute locally optimal gains given operating conditions.
-        Large error → high Kp; accumulated error → high Ki; oscillating → high Kd.
-        """
         err_norm  = abs(err) / (setpoint + 1e-6)
         int_norm  = min(abs(integral) / 50.0, 1.0)
-        spd_norm  = omega / 20.0
 
         Kp = 5.0  + 15.0 * err_norm
         Ki = 2.0  + 10.0 * int_norm
-        Kd = 0.1  +  1.5 * (1 - err_norm)  # more Kd near setpoint
+        Kd = 0.1  +  1.5 * (1 - err_norm)
         return np.clip(Kp, *self.KP_RANGE), np.clip(Ki, *self.KI_RANGE), np.clip(Kd, *self.KD_RANGE)
 
     def collect_data(self, setpoints=[5,8,10,12,15], disturbances=[0,0.2,0.3,0.5]):
@@ -158,7 +152,6 @@ class AdaptivePIDController:
                     Kp, Ki, Kd = self._optimal_gains(omega, sp, err, integral)
                     X.append([err/20, np.clip(integral,-100,100)/100,
                                np.clip(deriv,-50,50)/50, omega/20, sp/20])
-                    # Output: normalised gains
                     y.append([(Kp-self.KP_RANGE[0])/(self.KP_RANGE[1]-self.KP_RANGE[0]),
                                (Ki-self.KI_RANGE[0])/(self.KI_RANGE[1]-self.KI_RANGE[0]),
                                (Kd-self.KD_RANGE[0])/(self.KD_RANGE[1]-self.KD_RANGE[0])])
@@ -212,7 +205,7 @@ class QLearningController:
     N_ERR   = 25
     N_INT   = 15
     N_SPD   = 15
-    N_ACT   = 16   # voltage levels: 0, 1.6, 3.2, ..., 24 V
+    N_ACT   = 16
     ALPHA   = 0.15
     GAMMA   = 0.97
     EPS0    = 1.0
@@ -243,7 +236,6 @@ class QLearningController:
                 integral = np.clip(integral + err*DT, -100, 100)
                 s = self._discretise(err, integral, omega)
 
-                # ε-greedy
                 if np.random.rand() < eps:
                     a = np.random.randint(self.N_ACT)
                 else:
@@ -255,7 +247,6 @@ class QLearningController:
 
                 omega_new = state[0]
                 err_new   = setpoint - omega_new
-                # Shaped reward: penalise error heavily, small penalty on control effort
                 reward    = -2.0*err_new**2 - 0.005*u**2 + (1.0 if abs(err_new) < 0.5 else 0.0)
                 ep_reward += reward
 
@@ -267,9 +258,9 @@ class QLearningController:
 
         self.trained = True
 
-    def compute(self, err, integral, derivative=None, omega=None):
+    def compute(self, err, integral, derivative=None, setpoint=10.0, omega=None):
         if omega is None:
-            omega = max(0.0, 10.0 - err)   # fallback estimate
+            omega = max(0.0, setpoint - err)
         s = self._discretise(err, np.clip(integral, -100, 100), omega)
         a = np.argmax(self.Q[s])
         return self.actions[a]
@@ -287,7 +278,7 @@ def run_simulation(controller, setpoint=10.0, disturbance_time=3.0,
     integral = prev_err = 0.0
 
     omega_log, u_log, e_log = [], [], []
-    kp_log, ki_log, kd_log  = [], [], []   # only for adaptive PID
+    kp_log, ki_log, kd_log  = [], [], []
 
     is_adaptive = isinstance(controller, AdaptivePIDController)
     is_ql       = isinstance(controller, QLearningController)
@@ -304,12 +295,16 @@ def run_simulation(controller, setpoint=10.0, disturbance_time=3.0,
         if is_adaptive:
             u, Kp, Ki, Kd = controller.compute(err, integral, deriv, setpoint)
             kp_log.append(Kp); ki_log.append(Ki); kd_log.append(Kd)
+        elif is_ql:
+            u = controller.compute(err, integral, deriv, setpoint=setpoint, omega=state[0])
         elif is_ann:
             u = controller.compute(err, integral, deriv, setpoint)
-        elif is_ql:
-            u = controller.compute(err, integral, deriv, omega=state[0])
         else:
-            u = controller.compute(err, integral, deriv)
+            # Generic fallback — works for PID, K-Means, FCM, PINN, and any future controller
+            try:
+                u = controller.compute(err, integral, deriv, setpoint)
+            except TypeError:
+                u = controller.compute(err, integral, deriv)
 
         u     = np.clip(u, 0, 24)
         state = step_motor(state, u, dist)

@@ -392,6 +392,7 @@ with tab3:
             for i, (name, m) in enumerate(ranked):
                 medal = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣"][i]
                 color = COLORS[name]
+                val   = m[metric]
                 val_str = f"{val:.4f}" if isinstance(val, float) else str(val)
                 st.markdown(
                     f'<div style="background:#161B22;border-left:3px solid {color};'

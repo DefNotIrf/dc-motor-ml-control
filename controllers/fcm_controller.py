@@ -19,7 +19,7 @@ class FCMController:
     def __init__(self, n_clusters=N_CLUSTERS):
         self.n_clusters    = n_clusters
         self.scaler        = StandardScaler()
-        self.cntr          = None   # FCM cluster centres
+        self.cntr          = None
         self.cluster_gains = None
         self.trained       = False
 

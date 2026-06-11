@@ -190,8 +190,6 @@ def _get_controller(name):
 
 if run_btn:
     results = {}
-    os.makedirs('results', exist_ok=True)
-
     with st.spinner("Running simulations..."):
         for name in COLORS:
             if not sel[name]:
@@ -199,10 +197,8 @@ if run_btn:
             key = _KEY_MAP[name]
             if key and not st.session_state.trained[key]:
                 with st.spinner(f"Auto-training {name}..."):
-                    if key == 'ql':
-                        st.session_state.ql.train(setpoint=setpoint)
-                    else:
-                        getattr(st.session_state, key).train()
+                    ctrl = getattr(st.session_state, key)
+                    ctrl.train(setpoint=setpoint) if key == 'ql' else ctrl.train()
                     st.session_state.trained[key] = True
             results[name] = run_simulation(
                 _get_controller(name), setpoint, dist_time, dist_mag, noise_std)
@@ -351,7 +347,7 @@ with tab3:
                     f'<div style="background:#161B22;border-left:3px solid {color};'
                     f'padding:5px 10px;margin:2px 0;border-radius:4px;font-size:0.8rem;">'
                     f'{medals[i]} <span style="color:{color};font-weight:600;">{name}</span>'
-                    f' — <code>{val:.4f if isinstance(val, float) else val}</code></div>',
+                    f' — <code>{f"{val:.4f}" if isinstance(val, float) else val}</code></div>',
                     unsafe_allow_html=True)
 
     csv = df.to_csv().encode('utf-8')

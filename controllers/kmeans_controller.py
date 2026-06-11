@@ -6,7 +6,7 @@ MCTA 4362 Machine Learning — Mini Project
 import numpy as np
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from simulation_engine import R, L, Kb, Kt, J, B, DT, T_END, step_motor, PIDController
+from simulation_engine import DT, T_END, step_motor, PIDController
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import warnings

@@ -2,19 +2,9 @@
 PINN Controller — Physics-Informed Neural Network
 MCTA 4362 Machine Learning — Mini Project
 
-Key idea:
-    Total Loss = Data Loss + lambda * Physics Loss
-
-    - Data Loss   : supervised loss against PID-generated target voltages
-    - Physics Loss: how much the network's output violates the DC motor's
-                    differential equations (electrical + mechanical subsystems)
-
-The physics constraint prevents the network from producing outputs that are
-physically impossible, making it more robust than a plain ANN controller.
-
-DC Motor ODEs embedded in loss:
-    L * di/dt     = V - R*i - Kb*omega      (electrical)
-    J * domega/dt = Kt*i - B*omega          (mechanical)
+Total Loss = L_data + lambda * L_physics
+  L_data    : MSE against PID-generated target voltages
+  L_physics : ODE residuals of DC motor electrical + mechanical subsystems
 """
 
 import numpy as np
@@ -31,16 +21,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-# ─────────────────────────────────────────────
-# NEURAL NETWORK ARCHITECTURE
-# ─────────────────────────────────────────────
 class PINNNet(nn.Module):
-    """
-    Feedforward network: 5 inputs -> [128 -> 64 -> 32] -> 1 output
-
-    Inputs : [error, integral, derivative, omega, setpoint] (normalised)
-    Output : normalised voltage u in [0, 1]  ->  scaled to [0, 24] V
-    """
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
@@ -54,20 +35,7 @@ class PINNNet(nn.Module):
         return self.net(x)
 
 
-# ─────────────────────────────────────────────
-# PINN CONTROLLER CLASS
-# ─────────────────────────────────────────────
 class PINNController:
-    """
-    Physics-Informed Neural Network controller.
-
-    Training loss:
-        L_total = L_data + LAMBDA_PHYSICS * L_physics
-
-    L_data    = MSE between predicted voltage and PID-generated target voltage
-    L_physics = residual of DC motor ODEs evaluated at predicted voltage
-    """
-
     LAMBDA_PHYSICS = 0.05
     LR             = 0.001
     EPOCHS         = 400
@@ -89,16 +57,11 @@ class PINNController:
             setpoint / 20.0
         ], dtype=np.float32)
 
-    def _collect_data(self, setpoints=[5, 8, 10, 12, 15],
-                      disturbances=[0.0, 0.2, 0.3, 0.5]):
-        """
-        Run PID across multiple setpoints and disturbances.
-        Collect (features, target voltage, omega, current i) for training.
-        """
+    def _collect_data(self, setpoints=(5, 8, 10, 12, 15),
+                      disturbances=(0.0, 0.2, 0.3, 0.5)):
         pid = PIDController()
-
-        X_list, y_list       = [], []
-        omega_list, i_list   = [], []
+        X_list, y_list     = [], []
+        omega_list, i_list = [], []
 
         for sp in setpoints:
             for dm in disturbances:
@@ -113,47 +76,24 @@ class PINNController:
                     prev_err = err
 
                     u = float(np.clip(pid.compute(err, integral, deriv), 0, 24))
-
                     X_list.append(self._normalise_inputs(err, integral, deriv, omega, sp))
                     y_list.append(u / 24.0)
                     omega_list.append(omega)
                     i_list.append(i_curr)
 
-                    dist  = dm if step_t >= 3.0 else 0.0
-                    state = step_motor(state, u, dist)
+                    state = step_motor(state, u, dm if step_t >= 3.0 else 0.0)
 
         X      = torch.tensor(np.array(X_list),     dtype=torch.float32)
         y      = torch.tensor(np.array(y_list),     dtype=torch.float32).unsqueeze(1)
         omegas = torch.tensor(np.array(omega_list), dtype=torch.float32)
         i_vals = torch.tensor(np.array(i_list),     dtype=torch.float32)
-
         return X, y, omegas, i_vals
 
     def _physics_loss(self, u_pred_norm, omega_batch, i_batch):
-        """
-        Physics residual loss.
-
-        Given the network's predicted voltage, compute how much it violates
-        the DC motor's steady-state energy balance:
-
-        Electrical: voltage must overcome back-EMF and resistive drop
-            penalty = (u_pred - Kb*omega - R*i)^2
-
-        Mechanical: torque must overcome damping
-            penalty = (Kt*i - B*omega)^2
-
-        These penalise physically inconsistent voltage predictions.
-        """
-        u_pred = u_pred_norm * 24.0   # denormalise to volts
-
-        # Electrical residual: V = R*i + Kb*omega + L*di/dt
-        # At quasi-steady state di/dt ~ 0, so V should ~ R*i + Kb*omega
+        u_pred        = u_pred_norm * 24.0
         v_needed      = R * i_batch + Kb * omega_batch
         elec_residual = torch.mean((u_pred.squeeze() - v_needed) ** 2)
-
-        # Mechanical residual: net torque = Kt*i - B*omega should be ~ 0 at steady state
         mech_residual = torch.mean((Kt * i_batch - B * omega_batch) ** 2)
-
         return elec_residual + 0.1 * mech_residual
 
     def train(self, verbose=True):
@@ -168,10 +108,8 @@ class PINNController:
         criterion = nn.MSELoss()
 
         if verbose:
-            print(f"  Samples  : {n_samples}")
-            print(f"  Epochs   : {self.EPOCHS}")
-            print(f"  Lambda   : {self.LAMBDA_PHYSICS}")
-            print(f"  Network  : 5 -> 128 -> 64 -> 32 -> 1 (ReLU + Sigmoid)")
+            print(f"  Samples: {n_samples}  Epochs: {self.EPOCHS}  Lambda: {self.LAMBDA_PHYSICS}")
+            print(f"  Network: 5 -> 128 -> 64 -> 32 -> 1")
             print()
 
         self.model.train()
@@ -187,20 +125,15 @@ class PINNController:
             n_batches  = 0
 
             for start in range(0, n_samples, self.BATCH_SIZE):
-                end = start + self.BATCH_SIZE
-                xb  = X[start:end]
-                yb  = y[start:end]
-                ob  = omegas[start:end]
-                ib  = i_vals[start:end]
+                end    = start + self.BATCH_SIZE
+                xb, yb = X[start:end], y[start:end]
+                ob, ib = omegas[start:end], i_vals[start:end]
 
                 optimizer.zero_grad()
-
-                u_pred = self.model(xb)
-
+                u_pred    = self.model(xb)
                 loss_data = criterion(u_pred, yb)
                 loss_phys = self._physics_loss(u_pred, ob, ib)
                 loss      = loss_data + self.LAMBDA_PHYSICS * loss_phys
-
                 loss.backward()
                 optimizer.step()
 
@@ -212,18 +145,15 @@ class PINNController:
             scheduler.step()
 
             avg_loss = epoch_loss / n_batches
-            avg_data = epoch_data / n_batches
-            avg_phys = epoch_phys / n_batches
-
             self.loss_history.append(avg_loss)
-            self.data_loss_history.append(avg_data)
-            self.physics_loss_history.append(avg_phys)
+            self.data_loss_history.append(epoch_data / n_batches)
+            self.physics_loss_history.append(epoch_phys / n_batches)
 
             if verbose and (epoch + 1) % 50 == 0:
                 print(f"  Epoch {epoch+1:>3}/{self.EPOCHS} | "
                       f"Total: {avg_loss:.5f} | "
-                      f"Data: {avg_data:.5f} | "
-                      f"Physics: {avg_phys:.5f}")
+                      f"Data: {self.data_loss_history[-1]:.5f} | "
+                      f"Physics: {self.physics_loss_history[-1]:.5f}")
 
         self.trained = True
         if verbose:
@@ -276,22 +206,17 @@ if __name__ == "__main__":
     for k in m_pid:
         print(f"{k:<26} {str(m_pid[k]):>10} {str(m_pinn[k]):>10}")
 
-    # ── Figure 1: Speed response + voltage + error + loss ──
     plt.style.use('seaborn-v0_8-whitegrid')
-    C_PID = '#E63946'
-    C_PINN = '#A8DADC'
-    C_REF  = '#457B9D'
+    C_PID = '#E63946'; C_PINN = '#A8DADC'; C_REF = '#457B9D'
 
     fig = plt.figure(figsize=(16, 12))
     fig.patch.set_facecolor('#F8F9FA')
     gs  = gridspec.GridSpec(3, 2, hspace=0.45, wspace=0.35)
+    t   = r_pinn['time']
 
-    t = r_pinn['time']
-
-    # Speed response (full width)
     ax1 = fig.add_subplot(gs[0, :])
-    ax1.plot(t, r_pid['omega'],   color=C_PID,  lw=2,         label='PID Controller')
-    ax1.plot(t, r_pinn['omega'],  color=C_PINN, lw=2, ls='--', label='PINN Controller')
+    ax1.plot(t, r_pid['omega'],  color=C_PID,  lw=2,         label='PID Controller')
+    ax1.plot(t, r_pinn['omega'], color=C_PINN, lw=2, ls='--', label='PINN Controller')
     ax1.axhline(10.0,      color=C_REF,  lw=1.5, ls=':',  label='Setpoint (10 rad/s)')
     ax1.axhline(10.0*1.02, color='gray', lw=0.8, ls='--', alpha=0.4)
     ax1.axhline(10.0*0.98, color='gray', lw=0.8, ls='--', alpha=0.4)
@@ -301,7 +226,6 @@ if __name__ == "__main__":
     ax1.set_xlabel('Time (s)'); ax1.set_ylabel('Angular Speed (rad/s)')
     ax1.legend(loc='lower right', fontsize=9); ax1.set_xlim(0, T_END)
 
-    # PID voltage
     ax2 = fig.add_subplot(gs[1, 0])
     ax2.plot(t, r_pid['u'], color=C_PID, lw=1.5)
     ax2.axvline(3.0, color='orange', lw=1.2, ls='--', alpha=0.7)
@@ -309,7 +233,6 @@ if __name__ == "__main__":
     ax2.set_xlabel('Time (s)'); ax2.set_ylabel('Voltage (V)')
     ax2.set_xlim(0, T_END); ax2.set_ylim(-0.5, 25)
 
-    # PINN voltage
     ax3 = fig.add_subplot(gs[1, 1])
     ax3.plot(t, r_pinn['u'], color=C_PINN, lw=1.5, ls='--')
     ax3.axvline(3.0, color='orange', lw=1.2, ls='--', alpha=0.7)
@@ -317,7 +240,6 @@ if __name__ == "__main__":
     ax3.set_xlabel('Time (s)'); ax3.set_ylabel('Voltage (V)')
     ax3.set_xlim(0, T_END); ax3.set_ylim(-0.5, 25)
 
-    # Absolute error
     ax4 = fig.add_subplot(gs[2, 0])
     ax4.plot(t, np.abs(r_pid['error']),  color=C_PID,  lw=1.5, label='PID')
     ax4.plot(t, np.abs(r_pinn['error']), color=C_PINN, lw=1.5, ls='--', label='PINN')
@@ -326,9 +248,8 @@ if __name__ == "__main__":
     ax4.set_xlabel('Time (s)'); ax4.set_ylabel('|Error| (rad/s)')
     ax4.legend(fontsize=9); ax4.set_xlim(0, T_END)
 
-    # PINN training loss breakdown
     ax5 = fig.add_subplot(gs[2, 1])
-    ax5.plot(pinn.loss_history,         color='#E63946', lw=2,         label='Total Loss')
+    ax5.plot(pinn.loss_history,         color='#E63946', lw=2,          label='Total Loss')
     ax5.plot(pinn.data_loss_history,    color='#2A9D8F', lw=1.5, ls='--', label='Data Loss')
     ax5.plot(pinn.physics_loss_history, color='#F4A261', lw=1.5, ls=':',  label='Physics Loss')
     ax5.set_yscale('log')
@@ -342,29 +263,20 @@ if __name__ == "__main__":
                 facecolor=fig.get_facecolor())
     print("\n  Saved: results/pinn_response.png")
 
-    # ── Figure 2: Metrics table ──
     fig2, ax_t = plt.subplots(figsize=(10, 3.2))
     fig2.patch.set_facecolor('#F8F9FA')
     ax_t.axis('off')
-
-    metric_keys = list(m_pid.keys())
-    rows = [[k, str(m_pid[k]), str(m_pinn[k])] for k in metric_keys]
-
-    tbl = ax_t.table(cellText=rows, colLabels=['Metric', 'PID', 'PINN'],
-                     cellLoc='center', loc='center', colWidths=[0.55, 0.22, 0.22])
+    rows = [[k, str(m_pid[k]), str(m_pinn[k])] for k in m_pid]
+    tbl  = ax_t.table(cellText=rows, colLabels=['Metric', 'PID', 'PINN'],
+                      cellLoc='center', loc='center', colWidths=[0.55, 0.22, 0.22])
     tbl.auto_set_font_size(False); tbl.set_fontsize(11); tbl.scale(1, 2)
-
-    # Header style
     for j in range(3):
         tbl[0, j].set_facecolor('#264653')
         tbl[0, j].set_text_props(color='white', fontweight='bold')
-
-    # Row alternating colours
     for i in range(1, len(rows) + 1):
         bg = '#FFFFFF' if i % 2 == 0 else '#EDF2F4'
         for j in range(3):
             tbl[i, j].set_facecolor(bg)
-
     ax_t.set_title('Performance Metrics Summary — PID vs PINN',
                    fontsize=13, fontweight='bold', pad=20)
     plt.tight_layout()

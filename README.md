@@ -7,80 +7,34 @@
 
 ## Why Control a DC Motor?
 
-DC motors are everywhere, from industrial conveyor belts and robotic arms to electric vehicles and medical devices. At their core, they convert electrical energy into mechanical rotation, and controlling that rotation precisely is critical. Too slow and a robotic arm misses its target. Too fast and a conveyor line damages products. In the real world, motors face unpredictable loads, voltage fluctuations, and mechanical wear all of which throw off their speed.
+DC motors are everywhere — from industrial conveyor belts and robotic arms to electric vehicles and medical devices. Controlling their rotation precisely is critical: too slow and a robotic arm misses its target, too fast and a conveyor line damages products. In the real world, motors face unpredictable loads, voltage fluctuations, and mechanical wear — all of which throw off their speed.
 
-Speed control is therefore one of the most fundamental and practically important problems in engineering. Getting it right means better efficiency, longer hardware lifespan, and safer operation.
-
----
-
-## Why PID First?
-
-The **Proportional-Integral-Derivative (PID)** controller has been the industry standard for over a century — and for good reason. It is simple to implement, well-understood mathematically, and works reliably when the system is linear and well-modelled.
-
-For a DC motor, a PID controller works by:
-- **P** — reacting to the current speed error (how far we are from the target)
-- **I** — correcting for accumulated past errors (eliminating steady-state offset)
-- **D** — anticipating future error by looking at the rate of change
-
-PID is our **baseline** in this project. It represents what classical control can achieve with a well-tuned, fixed set of gains (Kp = 10.0, Ki = 8.0, Kd = 0.5). Any ML method we propose must justify itself by outperforming or meaningfully improving upon this baseline.
+Speed control is therefore one of the most fundamental problems in engineering. Getting it right means better efficiency, longer hardware lifespan, and safer operation.
 
 ---
 
-## Why Machine Learning?
-
-PID has a fundamental limitation: its gains are **fixed**. They are tuned for one operating condition and struggle when:
-
-- The motor load changes unexpectedly (disturbances)
-- The setpoint shifts to a very different speed
-- The system behaves nonlinearly at extreme conditions
-- Sensor noise corrupts the feedback signal
-
-This is where Machine Learning offers a genuine advantage. ML-based controllers can **learn from data**, **adapt to changing conditions**, and **discover control strategies** that are difficult or impossible to derive analytically.
-
-In this project, we explore three ML paradigms applied to DC motor speed control:
+## Controllers
 
 | Paradigm | Method | Key Idea |
 |---|---|---|
-| Supervised Learning | ANN | Learns to mimic optimal PID behaviour from training data |
-| Supervised + Physics | PINN | Embeds motor differential equations into the loss function |
-| Unsupervised Learning | K-Means | Clusters operating regions and schedules gains per cluster |
-| Unsupervised Learning | Fuzzy C-Means (FCM) | Soft clustering for smoother gain transitions across regions |
-| Reinforcement Learning | Q-Learning | Agent learns control policy through trial-and-error interaction |
+| Classical | PID | Fixed-gain baseline — proportional, integral, derivative |
+| Supervised | ANN | Learns to mimic PID behaviour from training data |
+| Supervised + Physics | PINN | Embeds motor ODEs into the loss function |
+| Unsupervised | K-Means | Clusters operating regions, schedules gains per cluster |
+| Unsupervised | Fuzzy C-Means (FCM) | Soft clustering for smoother gain transitions |
+| Reinforcement Learning | Q-Learning | Agent learns control policy through trial-and-error |
 
-Each method is evaluated against PID on the same motor model under identical conditions — giving a fair, direct comparison.
-
----
-
-## Simulation Setup
-
-| Parameter | Value |
-|---|---|
-| Time step (DT) | 0.01 s |
-| Simulation duration | 5.0 s |
-| Default setpoint | 10.0 rad/s |
-| Voltage limit | 0 – 24 V |
-| Disturbance injection | t = 3.0 s |
-| Disturbance magnitude | 0.3 N·m |
-| Sensor noise (σ) | 0.02 rad/s |
-
-### ANN Architecture
-- Input features: `[error, integral, derivative, omega, setpoint]` (all normalised)
-- Hidden layers: `128 → 64 → 32` neurons, ReLU activation
-- Output: normalised voltage (scaled back to 0–24 V)
-- Solver: Adam, learning rate 0.001, max 200 epochs
-- Training data: PID rollouts across setpoints `[5, 8, 10, 12, 15]` rad/s and disturbances `[0, 0.2, 0.3, 0.5]` N·m
+PID is our **baseline**. Every ML method is evaluated against it on the same motor model under identical conditions.
 
 ---
 
 ## DC Motor Model
 
-The motor is modelled using two coupled first-order differential equations:
+Two coupled first-order ODEs solved via RK45:
 
-**Electrical subsystem:**
-$$L \frac{di}{dt} = V - Ri - K_b \omega$$
+**Electrical:** $L \frac{di}{dt} = V - Ri - K_b \omega$
 
-**Mechanical subsystem:**
-$$J \frac{d\omega}{dt} = K_t i - B\omega - \tau_d$$
+**Mechanical:** $J \frac{d\omega}{dt} = K_t i - B\omega - \tau_d$
 
 | Parameter | Symbol | Value |
 |---|---|---|
@@ -93,16 +47,27 @@ $$J \frac{d\omega}{dt} = K_t i - B\omega - \tau_d$$
 
 ---
 
+## Simulation Setup
+
+| Parameter | Value |
+|---|---|
+| Time step | 0.01 s |
+| Duration | 5.0 s |
+| Default setpoint | 10.0 rad/s |
+| Voltage limit | 0 – 24 V |
+| Disturbance injection | t = 3.0 s, 0.3 N·m |
+| Sensor noise (σ) | 0.02 rad/s |
+
+---
+
 ## Performance Metrics
 
-All controllers are evaluated on:
-
-- **Rise Time** — how fast the motor reaches the target speed
-- **Overshoot** — how much it exceeds the target before settling
-- **Settling Time** — how long until it stays within ±2% of target
+- **Rise Time** — time to reach 90% of setpoint
+- **Overshoot** — peak speed above setpoint (%)
+- **Settling Time** — time to stay within ±2% of setpoint
 - **MSE** — Mean Squared Error of speed tracking
-- **IAE** — Integral Absolute Error over the full simulation
-- **Disturbance Rejection** — performance recovery after a load disturbance at t = 3s
+- **IAE** — Integral Absolute Error over full simulation
+- **Steady-State Speed** — mean speed over last 0.5 s
 
 ---
 
@@ -111,28 +76,20 @@ All controllers are evaluated on:
 ```
 dc-motor-ml-control/
 │
+├── simulation_engine.py         # Single source of truth: motor model, PID, ANN,
+│                                #   Adaptive ANN-PID, Q-Learning, runner, metrics
+│
 ├── controllers/
-│   ├── pid_controller.py        # Classical PID baseline
-│   ├── ann_controller.py        # ANN supervised controller
-│   ├── pinn_controller.py       # Physics-Informed Neural Network
+│   ├── __init__.py
+│   ├── PINN.py                  # Physics-Informed Neural Network controller
 │   ├── kmeans_controller.py     # K-Means gain scheduling
 │   ├── fcm_controller.py        # Fuzzy C-Means gain scheduling
-│   └── qlearning_controller.py  # Q-Learning RL controller
-│
-├── simulation/
-│   └── dc_motor.py              # DC motor model and simulation runner
+│   └── QLearning.py             # Standalone Q-Learning script (teammate original)
 │
 ├── app/
 │   └── app.py                   # Streamlit interactive dashboard
 │
-├── results/
-│   ├── dc_motor_comparison.png
-│   ├── dc_motor_analysis.png
-│   └── dc_motor_metrics.png
-│
-├── report/
-│   └── MCTA4362_MiniProject_Report.pdf
-│
+├── results/                     # Auto-generated plots
 ├── requirements.txt
 └── README.md
 ```
@@ -141,20 +98,37 @@ dc-motor-ml-control/
 
 ## Getting Started
 
-### Prerequisites
+### 1. Clone the repo
 ```bash
+git clone https://github.com/DefNotIrf/dc-motor-ml-control.git
+cd dc-motor-ml-control
+```
+
+### 2. Set up environment
+```bash
+python -m venv venv
+
+# Windows
+.\venv\Scripts\activate
+
+# Mac / Linux
+source venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-### Run the full simulation
-```bash
-python run_all.py
-```
-
-### Launch the interactive dashboard
+### 3. Launch the dashboard
 ```bash
 streamlit run app/app.py
 ```
+
+Browser opens at `http://localhost:8501`.
+
+**Workflow inside the app:**
+1. Adjust setpoint and disturbance in the sidebar
+2. Click **Train All ML Models** (PINN takes ~30–60 s)
+3. Click **Run Simulation**
+4. Explore the 4 tabs: Speed Response · Voltage & Error · Metrics · Training Analysis
 
 ---
 
@@ -162,96 +136,55 @@ streamlit run app/app.py
 
 | Name | Contribution |
 |---|---|
-| Member 1 | ANN Controller, Simulation Engine |
-| Member 2 | PINN Controller, Streamlit GUI |
-| Member 3 | K-Means Controller, FCM Controller |
-| Member 4 | Q-Learning Controller, Results Analysis |
+| Azim | ANN Controller, Simulation Engine |
+| Irfan | PINN Controller, Streamlit GUI, project integration |
+| Ammar | K-Means Controller, FCM Controller |
+| Naufal | Q-Learning Controller |
 
 ---
 
-## Collaborative Workflow (Read This First)
+## Collaborative Workflow
 
-We use a **branch-based workflow**. Nobody pushes directly to `master`. Ever.
+We use a **branch-based workflow**. Nobody pushes directly to `master`.
 
-### First Time Setup — Clone the Repo
+### Everyday workflow
 
 ```bash
-git clone https://github.com/defnotirf/dc-motor-ml-control.git
-cd dc-motor-ml-control
-pip install -r requirements.txt
-```
-
----
-
-### Everyday Workflow
-
-#### 1. Always pull latest changes before starting work
-```bash
+# 1. Sync with latest master before starting
 git checkout master
 git pull origin master
+
+# 2. Create a feature branch
+git checkout -b feature/your-feature-name
+
+# 3. Work, then commit
+git add <files>
+git commit -m "descriptive message of what you did"
+
+# 4. Push your branch
+git push origin feature/your-feature-name
+
+# 5. Open a Pull Request on GitHub — get it reviewed before merging
 ```
 
-#### 2. Create your own branch for your feature
-Name it something descriptive — use your controller name or feature.
-```bash
-git checkout -b feature/ann-controller
-git checkout -b feature/kmeans-controller
-git checkout -b feature/qlearning-controller
-git checkout -b feature/streamlit-gui
-```
+### Staying in sync
 
-#### 3. Do your work, then stage and commit
-```bash
-git add .
-git commit -m "add ANN controller with training loop"
-```
-Write commit messages that actually describe what you did. Not `"update"` or `"fix"`. Be specific.
-
-#### 4. Push your branch (NOT master)
-```bash
-git push origin feature/ann-controller
-```
-
-#### 5. Open a Pull Request on GitHub
-- Go to the repo on GitHub
-- Click **"Compare & pull request"**
-- Write a short description of what you did
-- Assign someone to review it
-- Wait for approval before merging
-
-#### 6. After merging, delete your branch and sync
-```bash
-git checkout master
-git pull origin master
-git branch -d feature/ann-controller
-```
-
----
-
-### Staying in Sync With Your Teammates
-
-If someone merged new code while you were working, pull it into your branch to avoid conflicts:
+If teammates merged new code while you were working:
 ```bash
 git checkout your-branch-name
 git merge master
 ```
 
-Resolve any conflicts, then continue working.
-
----
+Resolve conflicts, then continue.
 
 ### Rules
 
-- ❌ Never `git push origin master` directly
-- ❌ Never commit directly on master
-- ✅ One branch per feature / controller
-- ✅ Pull from master before starting any new work
-- ✅ Write meaningful commit messages
-- ✅ Each person owns their own files — avoid editing someone else's controller file
+- Never push directly to `master`
+- Pull from `master` before starting any new work
+- One branch per feature
+- Write meaningful commit messages
 
----
-
-### Branch Naming Convention
+### Branch naming
 
 | Branch | Owner |
 |---|---|

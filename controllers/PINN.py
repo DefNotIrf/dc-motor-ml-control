@@ -21,35 +21,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from scipy.integrate import solve_ivp
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from simulation_engine import (
+    R, L, Kb, Kt, J, B, DT, T_END,
+    step_motor, PIDController,
+)
 import warnings
 warnings.filterwarnings('ignore')
-
-# ─────────────────────────────────────────────
-# MOTOR PARAMETERS (must match dc_motor.py)
-# ─────────────────────────────────────────────
-R  = 1.0
-L  = 0.5
-Kb = 0.1
-Kt = 0.1
-J  = 0.01
-B  = 0.1
-
-DT    = 0.01
-T_END = 5.0
-
-
-def dc_motor(t, state, u, disturbance=0.0):
-    omega, i  = state
-    di_dt     = (u - R*i - Kb*omega) / L
-    domega_dt = (Kt*i - B*omega - disturbance) / J
-    return [domega_dt, di_dt]
-
-
-def step_motor(state, u, disturbance=0.0):
-    sol = solve_ivp(dc_motor, [0, DT], state, args=(u, disturbance),
-                    method='RK45', max_step=DT/10)
-    return sol.y[:, -1].tolist()
 
 
 # ─────────────────────────────────────────────
@@ -116,8 +95,7 @@ class PINNController:
         Run PID across multiple setpoints and disturbances.
         Collect (features, target voltage, omega, current i) for training.
         """
-        # Simple PID inline to avoid circular import
-        Kp, Ki, Kd = 10.0, 8.0, 0.5
+        pid = PIDController()
 
         X_list, y_list       = [], []
         omega_list, i_list   = [], []
@@ -134,7 +112,7 @@ class PINNController:
                     deriv    = (err - prev_err) / DT
                     prev_err = err
 
-                    u = float(np.clip(Kp*err + Ki*integral + Kd*deriv, 0, 24))
+                    u = float(np.clip(pid.compute(err, integral, deriv), 0, 24))
 
                     X_list.append(self._normalise_inputs(err, integral, deriv, omega, sp))
                     y_list.append(u / 24.0)
@@ -270,13 +248,10 @@ class PINNController:
 # STANDALONE TEST
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    import sys, os
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from controllers import run_simulation, compute_metrics, PIDController
+    from simulation_engine import run_simulation, compute_metrics
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
 
-    # Make sure results/ folder exists
     os.makedirs('results', exist_ok=True)
 
     print("=" * 55)

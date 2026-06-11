@@ -50,7 +50,7 @@ class PIDController:
     def __init__(self, Kp=10.0, Ki=8.0, Kd=0.5):
         self.Kp, self.Ki, self.Kd = Kp, Ki, Kd
 
-    def compute(self, err, integral, derivative):
+    def compute(self, err, integral, derivative, setpoint=None):
         return self.Kp*err + self.Ki*integral + self.Kd*derivative
 
     def name(self): return "PID"
@@ -133,9 +133,8 @@ class AdaptivePIDController:
         Heuristic: compute locally optimal gains given operating conditions.
         Large error → high Kp; accumulated error → high Ki; oscillating → high Kd.
         """
-        err_norm  = abs(err) / (setpoint + 1e-6)
-        int_norm  = min(abs(integral) / 50.0, 1.0)
-        spd_norm  = omega / 20.0
+        err_norm = abs(err) / (setpoint + 1e-6)
+        int_norm = min(abs(integral) / 50.0, 1.0)
 
         Kp = 5.0  + 15.0 * err_norm
         Ki = 2.0  + 10.0 * int_norm
@@ -205,76 +204,87 @@ class AdaptivePIDController:
 # ─────────────────────────────────────────────
 class QLearningController:
     """
-    Discrete Q-learning with state = (error_bin, integral_bin, speed_bin)
-    Action = voltage level (discretised 0..24V in N_ACTIONS steps)
-    Trained offline for N_EPISODES then frozen for evaluation.
+    Discrete Q-learning with state = (error_bin, d_error_bin)
+    Action = voltage level (discretised 0..24V in N_ACT steps)
+    Trained offline then frozen for evaluation.
     """
-    N_ERR   = 25
-    N_INT   = 15
-    N_SPD   = 15
-    N_ACT   = 16   # voltage levels: 0, 1.6, 3.2, ..., 24 V
-    ALPHA   = 0.15
-    GAMMA   = 0.97
-    EPS0    = 1.0
-    EPS_MIN = 0.02
-    EPS_DEC = 0.994
+    N_ERR  = 40
+    N_DERR = 20
+    N_ACT  = 13
+
+    ERROR_MIN, ERROR_MAX = -20.0, 20.0
+    DERR_MIN,  DERR_MAX  = -50.0, 50.0
+
+    ALPHA     = 0.2
+    GAMMA     = 0.95
+    EPS0      = 1.0
+    EPS_MIN   = 0.05
+    EPS_DEC   = 0.97
 
     def __init__(self):
-        self.Q       = np.zeros((self.N_ERR, self.N_INT, self.N_SPD, self.N_ACT))
-        self.actions = np.linspace(0, 24, self.N_ACT)
-        self.trained = False
+        self.Q              = np.zeros((self.N_ERR, self.N_DERR, self.N_ACT))
+        self.actions        = np.linspace(0, 24, self.N_ACT)
+        self.trained        = False
         self.rewards_per_ep = []
 
-    def _discretise(self, err, integral, omega=0.0):
-        e_idx = int(np.clip((err + 20) / 40 * self.N_ERR, 0, self.N_ERR-1))
-        i_idx = int(np.clip((integral + 100) / 200 * self.N_INT, 0, self.N_INT-1))
-        s_idx = int(np.clip(omega / 25.0 * self.N_SPD, 0, self.N_SPD-1))
-        return e_idx, i_idx, s_idx
+    def _discretise(self, err, derr):
+        e_idx = int(np.clip(
+            (err - self.ERROR_MIN) / (self.ERROR_MAX - self.ERROR_MIN) * self.N_ERR,
+            0, self.N_ERR - 1))
+        d_idx = int(np.clip(
+            (derr - self.DERR_MIN) / (self.DERR_MAX - self.DERR_MIN) * self.N_DERR,
+            0, self.N_DERR - 1))
+        return e_idx, d_idx
 
-    def train(self, setpoint=10.0, n_episodes=1200):
+    def _reward(self, err):
+        if abs(err) < 0.2:  return 10.0
+        if abs(err) < 1.0:  return  1.0
+        return -abs(err)
+
+    def train(self, setpoint=10.0, n_episodes=300):
         eps = self.EPS0
         for ep in range(n_episodes):
             state    = [0.0, 0.0]
-            integral = 0.0
+            prev_err = setpoint
             ep_reward = 0.0
-            for step_t in np.arange(0, T_END+DT, DT):
-                omega = state[0]
-                err   = setpoint - omega
-                integral = np.clip(integral + err*DT, -100, 100)
-                s = self._discretise(err, integral, omega)
+            sp = setpoint + np.random.uniform(-2, 2)
 
-                # ε-greedy
+            for step_t in np.arange(0, T_END + DT, DT):
+                omega    = state[0]
+                err      = sp - omega
+                derr     = (err - prev_err) / DT
+                prev_err = err
+
+                e_idx, d_idx = self._discretise(err, derr)
+
                 if np.random.rand() < eps:
                     a = np.random.randint(self.N_ACT)
                 else:
-                    a = np.argmax(self.Q[s])
+                    a = int(np.argmax(self.Q[e_idx, d_idx]))
 
-                u    = self.actions[a]
-                dist = 0.3 if step_t >= 3.0 else 0.0
+                u     = self.actions[a]
+                dist  = 0.3 if step_t >= 3.0 else 0.0
                 state = step_motor(state, u, dist)
 
-                omega_new = state[0]
-                err_new   = setpoint - omega_new
-                # Shaped reward: penalise error heavily, small penalty on control effort
-                reward    = -2.0*err_new**2 - 0.005*u**2 + (1.0 if abs(err_new) < 0.5 else 0.0)
-                ep_reward += reward
+                next_err  = sp - state[0]
+                next_derr = (next_err - err) / DT
+                ne, nd    = self._discretise(next_err, next_derr)
 
-                s2 = self._discretise(err_new, np.clip(integral + err_new*DT, -100, 100), omega_new)
-                self.Q[s][a] += self.ALPHA*(reward + self.GAMMA*np.max(self.Q[s2]) - self.Q[s][a])
+                r          = self._reward(next_err)
+                ep_reward += r
+                self.Q[e_idx, d_idx, a] += self.ALPHA * (
+                    r + self.GAMMA * np.max(self.Q[ne, nd]) - self.Q[e_idx, d_idx, a])
 
-            eps = max(self.EPS_MIN, eps*self.EPS_DEC)
+            eps = max(self.EPS_MIN, eps * self.EPS_DEC)
             self.rewards_per_ep.append(ep_reward)
 
         self.trained = True
 
-    def compute(self, err, integral, derivative=None, omega=None):
-        if omega is None:
-            omega = max(0.0, 10.0 - err)   # fallback estimate
-        s = self._discretise(err, np.clip(integral, -100, 100), omega)
-        a = np.argmax(self.Q[s])
-        return self.actions[a]
+    def compute(self, err, integral, derivative, setpoint=None):
+        e_idx, d_idx = self._discretise(err, derivative)
+        return float(self.actions[int(np.argmax(self.Q[e_idx, d_idx]))])
 
-    def name(self): return "Q-Learning RL"
+    def name(self): return "Q-Learning"
 
 
 # ─────────────────────────────────────────────
@@ -287,11 +297,9 @@ def run_simulation(controller, setpoint=10.0, disturbance_time=3.0,
     integral = prev_err = 0.0
 
     omega_log, u_log, e_log = [], [], []
-    kp_log, ki_log, kd_log  = [], [], []   # only for adaptive PID
+    kp_log, ki_log, kd_log  = [], [], []
 
     is_adaptive = isinstance(controller, AdaptivePIDController)
-    is_ql       = isinstance(controller, QLearningController)
-    is_ann      = isinstance(controller, ANNController)
 
     for step_t in t_span:
         omega    = state[0] + np.random.normal(0, noise_std)
@@ -304,12 +312,8 @@ def run_simulation(controller, setpoint=10.0, disturbance_time=3.0,
         if is_adaptive:
             u, Kp, Ki, Kd = controller.compute(err, integral, deriv, setpoint)
             kp_log.append(Kp); ki_log.append(Ki); kd_log.append(Kd)
-        elif is_ann:
-            u = controller.compute(err, integral, deriv, setpoint)
-        elif is_ql:
-            u = controller.compute(err, integral, deriv, omega=state[0])
         else:
-            u = controller.compute(err, integral, deriv)
+            u = controller.compute(err, integral, deriv, setpoint)
 
         u     = np.clip(u, 0, 24)
         state = step_motor(state, u, dist)
